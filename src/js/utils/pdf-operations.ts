@@ -453,39 +453,58 @@ export async function fixPageSize(
   pdfBytes: Uint8Array,
   options: FixPageSizeOptions
 ): Promise<Uint8Array> {
-  let targetWidth: number;
-  let targetHeight: number;
+  let baseWidth: number;
+  let baseHeight: number;
 
   if (options.targetSize.toLowerCase() === 'custom') {
     const w = options.customWidth ?? 210;
     const h = options.customHeight ?? 297;
     const units = (options.customUnits ?? 'mm').toLowerCase();
     if (units === 'in') {
-      targetWidth = w * 72;
-      targetHeight = h * 72;
+      baseWidth = w * 72;
+      baseHeight = h * 72;
     } else {
-      targetWidth = w * (72 / 25.4);
-      targetHeight = h * (72 / 25.4);
+      baseWidth = w * (72 / 25.4);
+      baseHeight = h * (72 / 25.4);
     }
   } else {
     const selected =
       PageSizes[options.targetSize as keyof typeof PageSizes] || PageSizes.A4;
-    targetWidth = selected[0];
-    targetHeight = selected[1];
+    baseWidth = selected[0];
+    baseHeight = selected[1];
+  }
+
+  // Normalise baseWidth/baseHeight to always be portrait (shorter side first).
+  // Per-page orientation will be applied inside the loop.
+  if (baseWidth > baseHeight) {
+    [baseWidth, baseHeight] = [baseHeight, baseWidth];
   }
 
   const orientation = options.orientation.toLowerCase();
-  if (orientation === 'landscape' && targetWidth < targetHeight) {
-    [targetWidth, targetHeight] = [targetHeight, targetWidth];
-  } else if (orientation === 'portrait' && targetWidth > targetHeight) {
-    [targetWidth, targetHeight] = [targetHeight, targetWidth];
-  }
-
   const sourceDoc = await PDFDocument.load(pdfBytes);
   const outputDoc = await PDFDocument.create();
 
   for (const sourcePage of sourceDoc.getPages()) {
     const { width: sourceWidth, height: sourceHeight } = sourcePage.getSize();
+
+    // Determine target dimensions for this specific page
+    let targetWidth: number;
+    let targetHeight: number;
+
+    if (orientation === 'auto') {
+      // Mirror each page's own orientation
+      const sourceIsLandscape = sourceWidth > sourceHeight;
+      targetWidth  = sourceIsLandscape ? baseHeight : baseWidth;
+      targetHeight = sourceIsLandscape ? baseWidth  : baseHeight;
+    } else if (orientation === 'landscape') {
+      targetWidth  = baseHeight; // longer side → width
+      targetHeight = baseWidth;
+    } else {
+      // portrait (default)
+      targetWidth  = baseWidth;
+      targetHeight = baseHeight;
+    }
+
     const embeddedPage = await outputDoc.embedPage(sourcePage);
 
     const outputPage = outputDoc.addPage([targetWidth, targetHeight]);
@@ -509,12 +528,9 @@ export async function fixPageSize(
     const scaledWidth = sourceWidth * scale;
     const scaledHeight = sourceHeight * scale;
 
-    const x = (targetWidth - scaledWidth) / 2;
-    const y = (targetHeight - scaledHeight) / 2;
-
     outputPage.drawPage(embeddedPage, {
-      x,
-      y,
+      x: (targetWidth - scaledWidth) / 2,
+      y: (targetHeight - scaledHeight) / 2,
       width: scaledWidth,
       height: scaledHeight,
     });
